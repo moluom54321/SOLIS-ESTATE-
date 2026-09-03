@@ -10,6 +10,7 @@ if (typeof window !== "undefined") {
 }
 
 const TOTAL_FRAMES = 593;
+const INITIAL_UNLOCK_FRAMES = 35; // Unlock UI as soon as first 35 frames are ready (~0.5s)
 const FRAME_PATH = "/frames/frame_";
 
 function padFrame(n: number): string {
@@ -82,7 +83,7 @@ export default function VillaExperience() {
   const isRenderingRef = useRef<boolean>(false);
   const pendingFrameRef = useRef<number | null>(null);
 
-  // ── High-Performance Canvas Frame Renderer (Mobile 60/120fps Optimized) ──
+  // ── High-Performance Canvas Frame Renderer ──────────────────────────
   const renderFrame = useCallback((targetFrameIndex: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -114,7 +115,6 @@ export default function VillaExperience() {
 
     lastDrawnFrameRef.current = clampedIndex;
 
-    // Mobile DPR clamp (max 2) for optimal battery and fluid 60/120fps animation
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -130,7 +130,6 @@ export default function VillaExperience() {
       ctx.scale(dpr, dpr);
     }
 
-    // Cover-fit calculation (responsive across mobile portrait & desktop landscape)
     const imgRatio = img.naturalWidth / img.naturalHeight;
     const canvasRatio = w / h;
 
@@ -153,7 +152,7 @@ export default function VillaExperience() {
     ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
   }, []);
 
-  // RAF Throttled Render for Mobile Performance
+  // RAF Throttled Render for 60/120fps Mobile Performance
   const requestFrameRender = useCallback((frameIndex: number) => {
     pendingFrameRef.current = frameIndex;
     if (!isRenderingRef.current) {
@@ -168,12 +167,37 @@ export default function VillaExperience() {
     }
   }, [renderFrame]);
 
-  // ── Preload Strategy with Concurrency & Image Decoding ──────────────
+  // Direct Frame Update Handler
+  const updateFrameFromProgress = useCallback((progress: number) => {
+    const clampedProgress = Math.max(0, Math.min(1, progress));
+    const frameIndex = Math.min(
+      TOTAL_FRAMES - 1,
+      Math.floor(clampedProgress * (TOTAL_FRAMES - 1))
+    );
+    setCurrentFrameNum(frameIndex + 1);
+
+    const sceneIndex = Math.min(
+      SCENES.length - 1,
+      Math.floor(clampedProgress * SCENES.length)
+    );
+    setActiveSceneIndex(sceneIndex);
+
+    requestFrameRender(frameIndex);
+  }, [requestFrameRender]);
+
+  // ── Smart Background Frame Preloader ────────────────────────────────
   useEffect(() => {
     let loadedCount = 0;
     let cancelled = false;
     const CONCURRENCY = 25;
     let nextIndex = 0;
+
+    // Safety timeout: unlock after 1.8s regardless of network speed
+    const safetyTimer = setTimeout(() => {
+      if (!cancelled) {
+        setIsPreloaderDone(true);
+      }
+    }, 1800);
 
     // Load first frame immediately
     const firstImg = new Image();
@@ -199,8 +223,9 @@ export default function VillaExperience() {
         const pct = Math.round((loadedCount / TOTAL_FRAMES) * 100);
         setLoadingProgress(pct);
 
-        if (loadedCount >= TOTAL_FRAMES) {
-          setTimeout(() => setIsPreloaderDone(true), 250);
+        // Unlock UI immediately when first batch is ready
+        if (loadedCount >= INITIAL_UNLOCK_FRAMES) {
+          setIsPreloaderDone(true);
         }
         loadNext();
       };
@@ -210,8 +235,8 @@ export default function VillaExperience() {
         loadedCount++;
         const pct = Math.round((loadedCount / TOTAL_FRAMES) * 100);
         setLoadingProgress(pct);
-        if (loadedCount >= TOTAL_FRAMES) {
-          setTimeout(() => setIsPreloaderDone(true), 250);
+        if (loadedCount >= INITIAL_UNLOCK_FRAMES) {
+          setIsPreloaderDone(true);
         }
         loadNext();
       };
@@ -223,62 +248,59 @@ export default function VillaExperience() {
 
     return () => {
       cancelled = true;
+      clearTimeout(safetyTimer);
     };
   }, [renderFrame]);
 
-  // ── Setup Lenis Smooth Scroll & GSAP ScrollTrigger ───────────────────
+  // ── Comprehensive Scroll & Animation Controller (Desktop + Mobile) ──
   useEffect(() => {
-    if (!isPreloaderDone) return;
-
     const isTouch = typeof window !== "undefined" && ("ontouchstart" in window || navigator.maxTouchPoints > 0);
 
-    // 1. Initialize Lenis Smooth Scroll
-    const lenis = new Lenis({
-      duration: isTouch ? 0.9 : 1.2,
-      easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
-      orientation: "vertical",
-      gestureOrientation: "vertical",
-      smoothWheel: true,
-      touchMultiplier: 1.6,
-      wheelMultiplier: 0.9,
-      infinite: false,
-    });
+    let lenis: Lenis | null = null;
+    let updateTicker: ((time: number) => void) | null = null;
 
-    lenis.on("scroll", ScrollTrigger.update);
+    // Desktop: Use Lenis for inertia wheel scrolling
+    if (!isTouch) {
+      lenis = new Lenis({
+        duration: 1.2,
+        easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
+        orientation: "vertical",
+        gestureOrientation: "vertical",
+        smoothWheel: true,
+      });
 
-    // Official GSAP Ticker Synchronization
-    const updateTicker = (time: number) => {
-      lenis.raf(time * 1000);
-    };
-    gsap.ticker.add(updateTicker);
-    gsap.ticker.lagSmoothing(0);
+      lenis.on("scroll", ScrollTrigger.update);
 
-    // Direct scroll sync handler
-    const updateFrameOnScroll = (progress: number) => {
-      const clampedProgress = Math.max(0, Math.min(1, progress));
-      const frameIndex = Math.min(
-        TOTAL_FRAMES - 1,
-        Math.floor(clampedProgress * (TOTAL_FRAMES - 1))
-      );
-      setCurrentFrameNum(frameIndex + 1);
+      updateTicker = (time: number) => {
+        lenis?.raf(time * 1000);
+      };
+      gsap.ticker.add(updateTicker);
+      gsap.ticker.lagSmoothing(0);
+    }
 
-      const sceneIndex = Math.min(
-        SCENES.length - 1,
-        Math.floor(clampedProgress * SCENES.length)
-      );
-      setActiveSceneIndex(sceneIndex);
-
-      requestFrameRender(frameIndex);
+    // Direct Native Window Scroll Listener (Guarantees 100% Mobile Touch Responsiveness)
+    const handleNativeScroll = () => {
+      const container = containerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const totalScrollable = rect.height - window.innerHeight;
+      if (totalScrollable > 0) {
+        const currentScroll = -rect.top;
+        const progress = Math.max(0, Math.min(1, currentScroll / totalScrollable));
+        updateFrameFromProgress(progress);
+      }
     };
 
-    // 2. Setup GSAP ScrollTrigger for Master Frame Scrubbing
+    window.addEventListener("scroll", handleNativeScroll, { passive: true });
+    window.addEventListener("touchmove", handleNativeScroll, { passive: true });
+
+    // GSAP ScrollTrigger for Master Frame Scrubbing & Card Overlays
     const ctx = gsap.context(() => {
       const container = containerRef.current;
       if (!container) return;
 
       const frameObj = { frame: 0 };
 
-      // Master frame scrubber tween
       gsap.to(frameObj, {
         frame: TOTAL_FRAMES - 1,
         ease: "none",
@@ -286,9 +308,9 @@ export default function VillaExperience() {
           trigger: container,
           start: "top top",
           end: "bottom bottom",
-          scrub: isTouch ? 0.08 : 0.35, // Instant thumb response on mobile
+          scrub: isTouch ? 0.05 : 0.3,
           onUpdate: (self) => {
-            updateFrameOnScroll(self.progress);
+            updateFrameFromProgress(self.progress);
           },
         },
       });
@@ -319,38 +341,41 @@ export default function VillaExperience() {
     // Initial render & refresh
     setTimeout(() => {
       ScrollTrigger.refresh();
-      renderFrame(0);
-    }, 100);
+      handleNativeScroll();
+    }, 150);
 
     const handleResize = () => {
       renderFrame(lastDrawnFrameRef.current >= 0 ? lastDrawnFrameRef.current : 0);
       ScrollTrigger.refresh();
+      handleNativeScroll();
     };
 
-    window.addEventListener("resize", handleResize);
-    window.addEventListener("orientationchange", handleResize);
+    window.addEventListener("resize", handleResize, { passive: true });
+    window.addEventListener("orientationchange", handleResize, { passive: true });
     if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", handleResize);
+      window.visualViewport.addEventListener("resize", handleResize, { passive: true });
     }
 
     return () => {
+      window.removeEventListener("scroll", handleNativeScroll);
+      window.removeEventListener("touchmove", handleNativeScroll);
       window.removeEventListener("resize", handleResize);
       window.removeEventListener("orientationchange", handleResize);
       if (window.visualViewport) {
         window.visualViewport.removeEventListener("resize", handleResize);
       }
-      gsap.ticker.remove(updateTicker);
-      lenis.destroy();
+      if (updateTicker) gsap.ticker.remove(updateTicker);
+      lenis?.destroy();
       ctx.revert();
     };
-  }, [isPreloaderDone, renderFrame, requestFrameRender]);
+  }, [renderFrame, updateFrameFromProgress]);
 
   return (
     <div ref={containerRef} className="relative bg-black text-white selection:bg-amber-400 selection:text-black overflow-x-hidden min-h-screen">
       {/* ── PRELOADER ─────────────────────────────────────────────────── */}
       <div
-        className={`fixed inset-0 z-50 flex flex-col items-center justify-center bg-black transition-opacity duration-700 p-6 ${
-          isPreloaderDone ? "opacity-0 pointer-events-none" : "opacity-100"
+        className={`fixed inset-0 z-50 flex flex-col items-center justify-center bg-black transition-opacity duration-500 p-6 ${
+          isPreloaderDone ? "opacity-0 pointer-events-none" : "opacity-100 pointer-events-auto"
         }`}
       >
         <div className="w-full max-w-xs text-center space-y-3.5">
@@ -581,7 +606,7 @@ export default function VillaExperience() {
             <p className="text-xs sm:text-sm text-neutral-300 font-light leading-relaxed">
               {SCENES[3].subtitle}
             </p>
-            {SCENES[2].stats && (
+            {SCENES[1].stats && (
               <div className="grid grid-cols-2 gap-3 pt-3 border-t border-white/10">
                 {SCENES[3].stats?.map((stat, i) => (
                   <div key={i}>

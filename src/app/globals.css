@@ -14,40 +14,23 @@
 
 html,
 body {
+  width: 100%;
+  min-height: 100%;
   background: #000000;
   color: #ededed;
   font-family: Arial, Helvetica, sans-serif;
   overflow-x: hidden;
-  overscroll-behavior-y: none;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
-}
-
-/* ── Lenis Smooth Scroll Standard Classes ────────────────────────────────── */
-html.lenis,
-html.lenis body {
-  height: auto;
-}
-
-.lenis.lenis-smooth {
-  scroll-behavior: auto !important;
-}
-
-.lenis.lenis-smooth [data-lenis-prevent] {
-  overscroll-behavior: contain;
-}
-
-.lenis.lenis-stopped {
-  overflow: hidden;
-}
-
-.lenis.lenis-smooth iframe {
-  pointer-events: none;
 }
 
 /* ── Mobile GPU Acceleration for Canvas ──────────────────────────────────── */
 canvas {
+  touch-action: pan-y;
+  pointer-events: none;
   transform: translateZ(0);
   backface-visibility: hidden;
   image-rendering: -webkit-optimize-contrast;
@@ -63,60 +46,16 @@ canvas {
   align-items: center;
   justify-content: center;
   background: #000;
-  transition: opacity 0.6s ease, visibility 0.6s ease;
+  transition: opacity 0.5s ease, visibility 0.5s ease;
+  pointer-events: none;
+}
+
+.preloader--active {
+  pointer-events: auto;
 }
 
 .preloader--hidden {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-}
-
-.preloader__content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1rem;
-  width: 260px;
-}
-
-.preloader__percentage {
-  font-size: 3.5rem;
-  font-weight: 200;
-  letter-spacing: 0.05em;
-  color: #fff;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-
-.preloader__bar-track {
-  width: 100%;
-  height: 2px;
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 999px;
-  overflow: hidden;
-}
-
-.preloader__bar-fill {
-  height: 100%;
-  background: #fff;
-  border-radius: 999px;
-  transition: width 0.15s ease-out;
-}
-
-.preloader__label {
-  font-size: 0.75rem;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.4);
-}
-
-/* ── Frame Canvas ────────────────────────────────────────────────────────── */
-.frame-canvas {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100dvh;
-  display: block;
-  z-index: 0;
 }

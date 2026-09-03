@@ -79,31 +79,30 @@ export default function VillaExperience() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const lastDrawnFrameRef = useRef<number>(-1);
-  const rafRef = useRef<number | null>(null);
+  const isRenderingRef = useRef<boolean>(false);
+  const pendingFrameRef = useRef<number | null>(null);
 
-  // ── Render Frame on Canvas with Nearest-Frame Fallback ──────────────
+  // ── High-Performance Canvas Frame Renderer (Mobile 60/120fps Optimized) ──
   const renderFrame = useCallback((targetFrameIndex: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { alpha: false });
     if (!ctx) return;
 
     const clampedIndex = Math.max(0, Math.min(TOTAL_FRAMES - 1, Math.round(targetFrameIndex)));
 
-    // Find the requested image or the closest available loaded frame
+    // Find requested image or closest loaded frame
     let img = imagesRef.current[clampedIndex];
     if (!img || !img.complete || img.naturalWidth === 0) {
-      // Search backwards first
       for (let i = clampedIndex; i >= 0; i--) {
-        if (imagesRef.current[i] && imagesRef.current[i]!.complete && imagesRef.current[i]!.naturalWidth > 0) {
+        if (imagesRef.current[i]?.complete && imagesRef.current[i]!.naturalWidth > 0) {
           img = imagesRef.current[i];
           break;
         }
       }
-      // If not found backwards, search forwards
       if (!img || !img.complete || img.naturalWidth === 0) {
         for (let i = clampedIndex; i < TOTAL_FRAMES; i++) {
-          if (imagesRef.current[i] && imagesRef.current[i]!.complete && imagesRef.current[i]!.naturalWidth > 0) {
+          if (imagesRef.current[i]?.complete && imagesRef.current[i]!.naturalWidth > 0) {
             img = imagesRef.current[i];
             break;
           }
@@ -115,18 +114,23 @@ export default function VillaExperience() {
 
     lastDrawnFrameRef.current = clampedIndex;
 
+    // Mobile DPR clamp (max 2) for optimal battery and fluid 60/120fps animation
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = window.innerWidth;
     const h = window.innerHeight;
 
-    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
+    const targetCanvasW = Math.round(w * dpr);
+    const targetCanvasH = Math.round(h * dpr);
+
+    if (canvas.width !== targetCanvasW || canvas.height !== targetCanvasH) {
+      canvas.width = targetCanvasW;
+      canvas.height = targetCanvasH;
       canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
       ctx.scale(dpr, dpr);
     }
 
+    // Cover-fit calculation (responsive across mobile portrait & desktop landscape)
     const imgRatio = img.naturalWidth / img.naturalHeight;
     const canvasRatio = w / h;
 
@@ -144,15 +148,31 @@ export default function VillaExperience() {
       offsetY = (h - drawH) / 2;
     }
 
-    ctx.clearRect(0, 0, w, h);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "medium";
     ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
   }, []);
 
-  // ── Preload Strategy (Fast Concurrent Loading) ──────────────────────
+  // RAF Throttled Render for Mobile Performance
+  const requestFrameRender = useCallback((frameIndex: number) => {
+    pendingFrameRef.current = frameIndex;
+    if (!isRenderingRef.current) {
+      isRenderingRef.current = true;
+      requestAnimationFrame(() => {
+        if (pendingFrameRef.current !== null) {
+          renderFrame(pendingFrameRef.current);
+          pendingFrameRef.current = null;
+        }
+        isRenderingRef.current = false;
+      });
+    }
+  }, [renderFrame]);
+
+  // ── Preload Strategy with Concurrency & Image Decoding ──────────────
   useEffect(() => {
     let loadedCount = 0;
     let cancelled = false;
-    const CONCURRENCY = 20;
+    const CONCURRENCY = 25;
     let nextIndex = 0;
 
     // Load first frame immediately
@@ -180,7 +200,7 @@ export default function VillaExperience() {
         setLoadingProgress(pct);
 
         if (loadedCount >= TOTAL_FRAMES) {
-          setTimeout(() => setIsPreloaderDone(true), 300);
+          setTimeout(() => setIsPreloaderDone(true), 250);
         }
         loadNext();
       };
@@ -191,7 +211,7 @@ export default function VillaExperience() {
         const pct = Math.round((loadedCount / TOTAL_FRAMES) * 100);
         setLoadingProgress(pct);
         if (loadedCount >= TOTAL_FRAMES) {
-          setTimeout(() => setIsPreloaderDone(true), 300);
+          setTimeout(() => setIsPreloaderDone(true), 250);
         }
         loadNext();
       };
@@ -212,26 +232,28 @@ export default function VillaExperience() {
 
     const isTouch = typeof window !== "undefined" && ("ontouchstart" in window || navigator.maxTouchPoints > 0);
 
-    // 1. Initialize Lenis
+    // 1. Initialize Lenis Smooth Scroll
     const lenis = new Lenis({
-      duration: isTouch ? 1.0 : 1.2,
+      duration: isTouch ? 0.9 : 1.2,
       easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
       orientation: "vertical",
       gestureOrientation: "vertical",
       smoothWheel: true,
+      touchMultiplier: 1.6,
       wheelMultiplier: 0.9,
-      touchMultiplier: 1.5,
+      infinite: false,
     });
 
     lenis.on("scroll", ScrollTrigger.update);
 
-    function lenisRaf(time: number) {
-      lenis.raf(time);
-      rafRef.current = requestAnimationFrame(lenisRaf);
-    }
-    rafRef.current = requestAnimationFrame(lenisRaf);
+    // Official GSAP Ticker Synchronization
+    const updateTicker = (time: number) => {
+      lenis.raf(time * 1000);
+    };
+    gsap.ticker.add(updateTicker);
+    gsap.ticker.lagSmoothing(0);
 
-    // Direct scroll sync function
+    // Direct scroll sync handler
     const updateFrameOnScroll = (progress: number) => {
       const clampedProgress = Math.max(0, Math.min(1, progress));
       const frameIndex = Math.min(
@@ -246,7 +268,7 @@ export default function VillaExperience() {
       );
       setActiveSceneIndex(sceneIndex);
 
-      renderFrame(frameIndex);
+      requestFrameRender(frameIndex);
     };
 
     // 2. Setup GSAP ScrollTrigger for Master Frame Scrubbing
@@ -264,29 +286,29 @@ export default function VillaExperience() {
           trigger: container,
           start: "top top",
           end: "bottom bottom",
-          scrub: isTouch ? 0.2 : 0.4,
+          scrub: isTouch ? 0.08 : 0.35, // Instant thumb response on mobile
           onUpdate: (self) => {
             updateFrameOnScroll(self.progress);
           },
         },
       });
 
-      // Animate individual scene cards
+      // Animate individual scene overlay cards
       const sections = gsap.utils.toArray<HTMLElement>(".scene-overlay");
       sections.forEach((sec) => {
         gsap.fromTo(
           sec,
-          { opacity: 0, y: 30, filter: "blur(6px)" },
+          { opacity: 0, y: 24, filter: "blur(5px)" },
           {
             opacity: 1,
             y: 0,
             filter: "blur(0px)",
-            duration: 0.8,
+            duration: 0.7,
             scrollTrigger: {
               trigger: sec,
               start: "top 80%",
               end: "top 20%",
-              scrub: 0.8,
+              scrub: 0.7,
               toggleActions: "play reverse play reverse",
             },
           }
@@ -307,15 +329,21 @@ export default function VillaExperience() {
 
     window.addEventListener("resize", handleResize);
     window.addEventListener("orientationchange", handleResize);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", handleResize);
+    }
 
     return () => {
       window.removeEventListener("resize", handleResize);
       window.removeEventListener("orientationchange", handleResize);
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", handleResize);
+      }
+      gsap.ticker.remove(updateTicker);
       lenis.destroy();
       ctx.revert();
     };
-  }, [isPreloaderDone, renderFrame]);
+  }, [isPreloaderDone, renderFrame, requestFrameRender]);
 
   return (
     <div ref={containerRef} className="relative bg-black text-white selection:bg-amber-400 selection:text-black overflow-x-hidden min-h-screen">
@@ -355,7 +383,7 @@ export default function VillaExperience() {
           </span>
         </div>
 
-        {/* Desktop Nav */}
+        {/* Desktop Navigation Links */}
         <nav className="hidden md:flex items-center space-x-6 lg:space-x-8 text-[11px] uppercase tracking-wider text-neutral-300">
           <a href="#scene-0" className="hover:text-white transition-colors">Overview</a>
           <a href="#scene-1" className="hover:text-white transition-colors">Architecture</a>
@@ -372,7 +400,7 @@ export default function VillaExperience() {
             Book Viewing
           </a>
 
-          {/* Mobile Menu Toggle Button */}
+          {/* Mobile Menu Button */}
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             className="md:hidden p-1.5 text-neutral-300 hover:text-white focus:outline-none"
@@ -430,11 +458,11 @@ export default function VillaExperience() {
         </div>
       )}
 
-      {/* ── FIXED FULL-VIEWPORT CANVAS (STAYS PINNED AS YOU SCROLL) ───── */}
+      {/* ── FIXED FULL-VIEWPORT CANVAS (ALWAYS PINNED & HARDWARE ACCELERATED) ── */}
       <div className="fixed inset-0 w-full h-[100dvh] overflow-hidden pointer-events-none z-0">
         <canvas ref={canvasRef} className="w-full h-full object-cover block" />
         
-        {/* Cinematic Vignette */}
+        {/* Cinematic Vignette Overlay */}
         <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-black/55 pointer-events-none" />
         <div className="absolute inset-0 bg-black/25 pointer-events-none" />
       </div>
@@ -553,9 +581,9 @@ export default function VillaExperience() {
             <p className="text-xs sm:text-sm text-neutral-300 font-light leading-relaxed">
               {SCENES[3].subtitle}
             </p>
-            {SCENES[3].stats && (
+            {SCENES[2].stats && (
               <div className="grid grid-cols-2 gap-3 pt-3 border-t border-white/10">
-                {SCENES[3].stats.map((stat, i) => (
+                {SCENES[3].stats?.map((stat, i) => (
                   <div key={i}>
                     <p className="text-[9px] sm:text-[9.5px] font-mono tracking-wider text-neutral-400 uppercase">{stat.label}</p>
                     <p className="text-xs sm:text-sm md:text-base font-medium text-white tracking-wide">{stat.value}</p>
